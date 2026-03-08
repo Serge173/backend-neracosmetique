@@ -29,7 +29,7 @@ export class Review {
   @Column({ name: 'order_id', nullable: true })
   orderId: string;
 
-  @Column({ type: 'tinyint' })
+  @Column({ type: 'smallint' })
   rating: number;
 
   @Column({ nullable: true, length: 150 })
