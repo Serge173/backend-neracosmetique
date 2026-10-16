@@ -57,35 +57,11 @@ export class OrdersService implements OnModuleInit {
     }
 
     try {
-      const order = this.orderRepository.create({
-        id: uuidv4(),
-        firstName: String(orderData.firstName ?? '').trim(),
-        lastName: String(orderData.lastName ?? '').trim(),
-        email: String(orderData.email ?? '').trim(),
-        phone: String(orderData.phone ?? '').trim(),
-        addressLine1: String(orderData.addressLine1 ?? '').trim(),
-        addressLine2: orderData.addressLine2 != null ? String(orderData.addressLine2).trim() : null,
-        city: String(orderData.city ?? '').trim(),
-        postalCode: orderData.postalCode != null ? String(orderData.postalCode).trim() : null,
-        deliveryZoneId,
-        deliveryMethod: orderData.deliveryMethod ?? null,
-        paymentMethod: String(orderData.paymentMethod ?? 'mtn_momo').trim(),
-        subtotal: Number(orderData.subtotal) || 0,
-        shippingAmount: Number(orderData.shippingAmount) || 0,
-        discountAmount: Number(orderData.discountAmount) || 0,
-        total: Number(orderData.total) || 0,
-        userId: userId ?? null,
-        orderNumber,
-        status: 'pending',
-        paymentStatus: 'pending',
-      });
-
-      const savedOrder = (await this.orderRepository.save(order)) as Order;
-
       // Longueurs sûres pour MySQL (VARCHAR par défaut ≈ 255)
       const maxVarcharLength = 240;
       const maxUrlLength = maxVarcharLength;
 
+      const itemsData: Partial<OrderItem>[] = [];
       for (const it of items) {
         const unitPrice = Number(it.unitPrice ?? 0);
         const quantity = Number(it.quantity ?? 0);
@@ -117,8 +93,7 @@ export class OrdersService implements OnModuleInit {
           // Garder les valeurs du frontend si le produit n'existe plus
         }
 
-        const orderItem = this.orderItemRepository.create({
-          orderId: savedOrder.id,
+        itemsData.push({
           productId: it.productId,
           productName,
           productSlug,
@@ -129,23 +104,56 @@ export class OrdersService implements OnModuleInit {
           productShortDescription,
           productBrandName,
         });
-        await this.orderItemRepository.save(orderItem);
       }
 
+      const orderId = uuidv4();
+      const order = this.orderRepository.create({
+        id: orderId,
+        firstName: String(orderData.firstName ?? '').trim(),
+        lastName: String(orderData.lastName ?? '').trim(),
+        email: String(orderData.email ?? '').trim(),
+        phone: String(orderData.phone ?? '').trim(),
+        addressLine1: String(orderData.addressLine1 ?? '').trim(),
+        addressLine2: orderData.addressLine2 != null ? String(orderData.addressLine2).trim() : null,
+        city: String(orderData.city ?? '').trim(),
+        postalCode: orderData.postalCode != null ? String(orderData.postalCode).trim() : null,
+        deliveryZoneId,
+        deliveryMethod: orderData.deliveryMethod ?? null,
+        paymentMethod: String(orderData.paymentMethod ?? 'mtn_momo').trim(),
+        subtotal: Number(orderData.subtotal) || 0,
+        shippingAmount: Number(orderData.shippingAmount) || 0,
+        discountAmount: Number(orderData.discountAmount) || 0,
+        total: Number(orderData.total) || 0,
+        userId: userId ?? null,
+        orderNumber,
+        status: 'pending',
+        paymentStatus: 'pending',
+      });
+
+      await this.orderRepository.manager.transaction(async (manager) => {
+        await manager.save(Order, order);
+        if (itemsData.length) {
+          await manager.save(
+            OrderItem,
+            itemsData.map((data) => manager.create(OrderItem, { ...data, orderId })),
+          );
+        }
+      });
+
       return this.orderRepository.findOne({
-        where: { id: savedOrder.id },
+        where: { id: orderId },
         relations: ['items'],
       }) as Promise<Order>;
     } catch (err: any) {
       this.logger.error('Order create failed', err?.message, err?.stack);
       const msg = err?.message || String(err);
-      if (err?.code === 'ER_DATA_TOO_LONG' || msg.includes('Data too long')) {
-        throw new BadRequestException('Une donnée dépasse la limite autorisée (ex. URL d\'image trop longue). Réessayez.');
+      if (err?.code === '22001' || err?.code === 'ER_DATA_TOO_LONG' || msg.includes('Data too long')) {
+        throw new BadRequestException('Une donnée dépasse la limite autorisée. Vérifiez vos informations.');
       }
-      if (err?.code === 'ER_NO_REFERENCED_ROW' || msg.includes('foreign key')) {
+      if (err?.code === '23503' || err?.code === 'ER_NO_REFERENCED_ROW' || msg.includes('foreign key')) {
         throw new BadRequestException('Référence invalide (zone de livraison ou produit). Vérifiez le panier.');
       }
-      throw new BadRequestException(err?.message || 'Impossible de créer la commande. Vérifiez vos informations.');
+      throw new BadRequestException('Impossible de créer la commande. Vérifiez vos informations.');
     }
   }
 

@@ -26,7 +26,7 @@ export class Review {
   @JoinColumn({ name: 'order_id' })
   order: Order;
 
-  @Column({ name: 'order_id', nullable: true })
+  @Column({ name: 'order_id', type: 'char', length: 36, nullable: true })
   orderId: string;
 
   @Column({ type: 'smallint' })
