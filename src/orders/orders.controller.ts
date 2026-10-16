@@ -15,6 +15,11 @@ export class OrdersController {
     return this.ordersService.create(userId, orderData);
   }
 
+  @Get('delivery-options')
+  deliveryOptions() {
+    return this.ordersService.getDeliveryOptions();
+  }
+
   @Get()
   @UseGuards(JwtAuthGuard)
   async findAll(@Request() req) {

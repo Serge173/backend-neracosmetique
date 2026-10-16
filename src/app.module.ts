@@ -18,6 +18,7 @@ import { ContactModule } from './contact/contact.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { AdminModule } from './admin/admin.module';
 import { SlidesModule } from './slides/slides.module';
+import { AccountModule } from './account/account.module';
 
 @Module({
   imports: [
@@ -65,6 +66,7 @@ import { SlidesModule } from './slides/slides.module';
     NewsletterModule,
     SlidesModule,
     AdminModule,
+    AccountModule,
   ],
   controllers: [AppController],
   providers: [

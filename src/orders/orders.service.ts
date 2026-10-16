@@ -1,13 +1,22 @@
 import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { EntityManager, Repository } from 'typeorm';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { DeliveryZone } from './entities/delivery-zone.entity';
-import { ProductsService } from '../products/products.service';
 import { v4 as uuidv4 } from 'uuid';
 
 const SAFE_PLACEHOLDER_IMAGE = 'https://via.placeholder.com/400?text=Produit';
+
+const PAYMENT_METHODS = ['cash_on_delivery'];
+
+/** Tarifs de secours si la zone de livraison correspondante est absente ou désactivée. */
+const DELIVERY_METHODS: Record<string, { zoneId: number; price: number }> = {
+  abidjan: { zoneId: 1, price: 1500 },
+  interior: { zoneId: 2, price: 3000 },
+};
+
+const round2 = (n: number) => Math.round(n * 100) / 100;
 
 @Injectable()
 export class OrdersService implements OnModuleInit {
@@ -20,7 +29,6 @@ export class OrdersService implements OnModuleInit {
     private orderItemRepository: Repository<OrderItem>,
     @InjectRepository(DeliveryZone)
     private deliveryZoneRepository: Repository<DeliveryZone>,
-    private productsService: ProductsService,
   ) {}
 
   async onModuleInit(): Promise<void> {
@@ -40,104 +48,74 @@ export class OrdersService implements OnModuleInit {
     }
   }
 
+  /**
+   * Les montants (prix, livraison, réduction, total) sont toujours recalculés ici :
+   * seuls les identifiants produits, quantités, mode de livraison et code promo du client sont pris en compte.
+   */
   async create(userId: string | null, orderData: any): Promise<Order> {
-    // Génère un numéro de commande court pour respecter la taille de la colonne SQL
     const timestampPart = Date.now().toString().slice(-8);
     const uuidPart = uuidv4().replace(/-/g, '').substring(0, 4).toUpperCase();
     const orderNumber = `NERA-${timestampPart}-${uuidPart}`.substring(0, 20);
-    const items = orderData.items || [];
 
-    let deliveryZoneId: number | null = orderData.deliveryZoneId != null ? Number(orderData.deliveryZoneId) : null;
-    if (deliveryZoneId != null && (Number.isNaN(deliveryZoneId) || deliveryZoneId <= 0)) {
-      deliveryZoneId = null;
-    }
-    if (deliveryZoneId != null) {
-      const zone = await this.deliveryZoneRepository.findOne({ where: { id: deliveryZoneId } });
-      if (!zone) deliveryZoneId = null;
-    }
+    const customer = this.parseCustomer(orderData);
+    const lines = this.parseLines(orderData?.items);
+    const products = await this.loadProducts(lines.map((l) => l.productId));
+
+    const itemsData: Partial<OrderItem>[] = lines.map(({ productId, quantity }) => {
+      const p = products.get(productId);
+      if (!p) throw new BadRequestException("Un produit de votre panier n'est plus disponible. Mettez votre panier à jour.");
+      if (p.stock < quantity) {
+        throw new BadRequestException(
+          p.stock > 0 ? `Stock insuffisant pour « ${p.name} » (${p.stock} disponible(s)).` : `« ${p.name} » est en rupture de stock.`,
+        );
+      }
+      return {
+        productId,
+        productName: p.name.substring(0, 240),
+        productSlug: p.slug.substring(0, 240),
+        quantity,
+        unitPrice: p.unitPrice,
+        totalPrice: round2(p.unitPrice * quantity),
+        productImageUrl: p.image ? (/bing\.com|blogspot\.com/i.test(p.image) ? SAFE_PLACEHOLDER_IMAGE : p.image.substring(0, 240)) : null,
+        productShortDescription: p.shortDescription ? p.shortDescription.substring(0, 500) : null,
+        productBrandName: p.brandName ? p.brandName.substring(0, 100) : null,
+      };
+    });
+    const subtotal = round2(itemsData.reduce((sum, it) => sum + Number(it.totalPrice), 0));
+
+    const { deliveryZoneId, deliveryMethod, shippingAmount } = await this.resolveDelivery(orderData, subtotal);
+    const couponCode = String(orderData?.couponCode ?? '').trim().toUpperCase().substring(0, 40);
 
     try {
-      // Longueurs sûres pour MySQL (VARCHAR par défaut ≈ 255)
-      const maxVarcharLength = 240;
-      const maxUrlLength = maxVarcharLength;
-
-      const itemsData: Partial<OrderItem>[] = [];
-      for (const it of items) {
-        const unitPrice = Number(it.unitPrice ?? 0);
-        const quantity = Number(it.quantity ?? 0);
-        let productImageUrl: string | null = it.productImageUrl ?? null;
-        if (productImageUrl) {
-          // Bloquer certains domaines problématiques + tronquer pour rester sous la limite SQL
-          if (/bing\.com|blogspot\.com/i.test(productImageUrl)) {
-            productImageUrl = SAFE_PLACEHOLDER_IMAGE;
-          }
-          if (productImageUrl.length > maxUrlLength) {
-            productImageUrl = productImageUrl.substring(0, maxUrlLength);
-          }
-        }
-
-        let productShortDescription: string | null = null;
-        let productBrandName: string | null = null;
-        let productName = (it.productName ?? 'Produit').substring(0, maxVarcharLength);
-        let productSlug = (it.productSlug ?? '').substring(0, maxVarcharLength);
-        try {
-          const productId = Number(it.productId);
-          if (productId && !Number.isNaN(productId)) {
-            const product = await this.productsService.findOne(productId);
-            productName = (product?.name ?? productName).substring(0, maxVarcharLength);
-            productSlug = (product?.slug ?? productSlug).substring(0, maxVarcharLength);
-            productShortDescription = product?.shortDescription ? String(product.shortDescription).substring(0, 500) : null;
-            productBrandName = product?.brand?.name ? String(product.brand.name).substring(0, 100) : null;
-          }
-        } catch {
-          // Garder les valeurs du frontend si le produit n'existe plus
-        }
-
-        itemsData.push({
-          productId: it.productId,
-          productName,
-          productSlug,
-          quantity,
-          unitPrice,
-          totalPrice: unitPrice * quantity,
-          productImageUrl,
-          productShortDescription,
-          productBrandName,
-        });
-      }
-
       const orderId = uuidv4();
-      const order = this.orderRepository.create({
-        id: orderId,
-        firstName: String(orderData.firstName ?? '').trim(),
-        lastName: String(orderData.lastName ?? '').trim(),
-        email: String(orderData.email ?? '').trim(),
-        phone: String(orderData.phone ?? '').trim(),
-        addressLine1: String(orderData.addressLine1 ?? '').trim(),
-        addressLine2: orderData.addressLine2 != null ? String(orderData.addressLine2).trim() : null,
-        city: String(orderData.city ?? '').trim(),
-        postalCode: orderData.postalCode != null ? String(orderData.postalCode).trim() : null,
-        deliveryZoneId,
-        deliveryMethod: orderData.deliveryMethod ?? null,
-        paymentMethod: String(orderData.paymentMethod ?? 'mtn_momo').trim(),
-        subtotal: Number(orderData.subtotal) || 0,
-        shippingAmount: Number(orderData.shippingAmount) || 0,
-        discountAmount: Number(orderData.discountAmount) || 0,
-        total: Number(orderData.total) || 0,
-        userId: userId ?? null,
-        orderNumber,
-        status: 'pending',
-        paymentStatus: 'pending',
-      });
-
       await this.orderRepository.manager.transaction(async (manager) => {
-        await manager.save(Order, order);
-        if (itemsData.length) {
-          await manager.save(
-            OrderItem,
-            itemsData.map((data) => manager.create(OrderItem, { ...data, orderId })),
-          );
+        let discountAmount = 0;
+        let couponId: number | null = null;
+        if (couponCode) {
+          const applied = await this.applyCoupon(manager, couponCode, subtotal, userId);
+          discountAmount = applied.discount;
+          couponId = applied.couponId;
         }
+        const order = manager.create(Order, {
+          id: orderId,
+          ...customer,
+          deliveryZoneId,
+          deliveryMethod,
+          subtotal,
+          shippingAmount,
+          discountAmount,
+          couponId,
+          total: round2(Math.max(0, subtotal + shippingAmount - discountAmount)),
+          userId: userId ?? null,
+          orderNumber,
+          status: 'pending',
+          paymentStatus: 'pending',
+        });
+        await manager.save(Order, order);
+        await manager.save(
+          OrderItem,
+          itemsData.map((data) => manager.create(OrderItem, { ...data, orderId })),
+        );
       });
 
       return this.orderRepository.findOne({
@@ -145,6 +123,7 @@ export class OrdersService implements OnModuleInit {
         relations: ['items'],
       }) as Promise<Order>;
     } catch (err: any) {
+      if (err instanceof BadRequestException) throw err;
       this.logger.error('Order create failed', err?.message, err?.stack);
       const msg = err?.message || String(err);
       if (err?.code === '22001' || err?.code === 'ER_DATA_TOO_LONG' || msg.includes('Data too long')) {
@@ -155,6 +134,127 @@ export class OrdersService implements OnModuleInit {
       }
       throw new BadRequestException('Impossible de créer la commande. Vérifiez vos informations.');
     }
+  }
+
+  private parseCustomer(data: any) {
+    const field = (key: string, max: number, label: string, required = true) => {
+      const value = String(data?.[key] ?? '').replace(/[\u0000-\u001f\u007f]/g, ' ').trim();
+      if (required && !value) throw new BadRequestException(`${label} est obligatoire.`);
+      if (value.length > max) throw new BadRequestException(`${label} est trop long (${max} caractères maximum).`);
+      return value || null;
+    };
+    const customer = {
+      firstName: field('firstName', 100, 'Le nom'),
+      lastName: field('lastName', 100, 'Le prénom'),
+      email: field('email', 180, "L'e-mail").toLowerCase(),
+      phone: field('phone', 30, 'Le téléphone'),
+      addressLine1: field('addressLine1', 240, "L'adresse"),
+      addressLine2: field('addressLine2', 240, "Le complément d'adresse", false),
+      city: field('city', 100, 'La ville'),
+      postalCode: field('postalCode', 20, 'Le code postal', false),
+      paymentMethod: String(data?.paymentMethod ?? 'cash_on_delivery').trim(),
+    };
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customer.email)) throw new BadRequestException('Adresse e-mail invalide.');
+    if (!/^[+0-9 ().-]{6,30}$/.test(customer.phone)) throw new BadRequestException('Numéro de téléphone invalide.');
+    if (!PAYMENT_METHODS.includes(customer.paymentMethod)) throw new BadRequestException('Mode de paiement indisponible.');
+    return customer;
+  }
+
+  private parseLines(items: unknown): { productId: number; quantity: number }[] {
+    if (!Array.isArray(items) || items.length === 0) throw new BadRequestException('Votre panier est vide.');
+    if (items.length > 50) throw new BadRequestException('Trop d’articles différents dans une même commande.');
+    const merged = new Map<number, number>();
+    for (const it of items) {
+      const productId = Number(it?.productId);
+      const quantity = Number(it?.quantity);
+      if (!Number.isInteger(productId) || productId <= 0 || !Number.isInteger(quantity) || quantity < 1 || quantity > 99) {
+        throw new BadRequestException('Un article du panier est invalide.');
+      }
+      merged.set(productId, (merged.get(productId) ?? 0) + quantity);
+    }
+    return [...merged].map(([productId, quantity]) => ({ productId, quantity }));
+  }
+
+  private async loadProducts(ids: number[]) {
+    const rows = await this.orderRepository.query(
+      `select p.id, p.name, p.slug, p.price, p.promo_price, p.stock_quantity, p.short_description, b.name as brand_name,
+              (select pi.url from product_images pi where pi.product_id = p.id
+                order by pi.is_primary desc, pi.sort_order asc, pi.id asc limit 1) as image
+         from products p left join brands b on b.id = p.brand_id
+        where p.id = any($1) and p.is_active = true`,
+      [ids],
+    );
+    const map = new Map<number, { name: string; slug: string; unitPrice: number; stock: number; image: string | null; shortDescription: string | null; brandName: string | null }>();
+    for (const r of rows) {
+      const promo = r.promo_price != null ? Number(r.promo_price) : null;
+      const unitPrice = promo != null && promo > 0 ? promo : Number(r.price);
+      map.set(Number(r.id), {
+        name: String(r.name),
+        slug: String(r.slug ?? ''),
+        unitPrice: round2(unitPrice),
+        stock: Number(r.stock_quantity) || 0,
+        image: r.image ?? null,
+        shortDescription: r.short_description ?? null,
+        brandName: r.brand_name ?? null,
+      });
+    }
+    return map;
+  }
+
+  async getDeliveryOptions() {
+    const zones = await this.deliveryZoneRepository.find({
+      where: Object.values(DELIVERY_METHODS).map((m) => ({ id: m.zoneId, isActive: true })),
+    });
+    return Object.entries(DELIVERY_METHODS).map(([method, fallback]) => {
+      const zone = zones.find((z) => z.id === fallback.zoneId);
+      return {
+        method,
+        price: round2(zone ? Number(zone.price) : fallback.price),
+        freeFrom: zone?.minOrderFreeDelivery != null ? Number(zone.minOrderFreeDelivery) : null,
+      };
+    });
+  }
+
+  private async resolveDelivery(data: any, subtotal: number) {
+    const method = String(data?.deliveryMethod ?? '').trim();
+    const fallback = DELIVERY_METHODS[method];
+    if (!fallback) throw new BadRequestException('Choisissez un mode de livraison.');
+    const zone = await this.deliveryZoneRepository.findOne({ where: { id: fallback.zoneId, isActive: true } });
+    const free = zone?.minOrderFreeDelivery != null && subtotal >= Number(zone.minOrderFreeDelivery);
+    return {
+      deliveryMethod: method,
+      deliveryZoneId: zone ? zone.id : null,
+      shippingAmount: free ? 0 : round2(zone ? Number(zone.price) : fallback.price),
+    };
+  }
+
+  /** Valide et consomme un code promo dans la transaction de la commande. */
+  private async applyCoupon(manager: EntityManager, code: string, subtotal: number, userId: string | null) {
+    const [coupon] = await manager.query(
+      `select id, type, value, min_order_amount, max_uses, used_count, valid_from, valid_to
+         from coupons where code = $1 and is_active = true for update`,
+      [code],
+    );
+    if (!coupon) throw new BadRequestException('Code promo invalide.');
+    const now = Date.now();
+    if (coupon.valid_from && new Date(coupon.valid_from).getTime() > now) throw new BadRequestException("Ce code promo n'est pas encore valide.");
+    if (coupon.valid_to && new Date(coupon.valid_to).getTime() < now) throw new BadRequestException('Ce code promo a expiré.');
+    if (coupon.max_uses != null && Number(coupon.used_count) >= Number(coupon.max_uses)) {
+      throw new BadRequestException("Ce code promo n'est plus disponible.");
+    }
+    if (coupon.min_order_amount != null && Number(coupon.min_order_amount) > subtotal) {
+      throw new BadRequestException(
+        `Ce code promo nécessite un minimum d'achat de ${Number(coupon.min_order_amount).toLocaleString('fr-FR')} F CFA.`,
+      );
+    }
+    const [owner] = await manager.query(`select user_id from user_loyalty_redemptions where coupon_id = $1`, [coupon.id]);
+    if (owner && owner.user_id !== userId) {
+      throw new BadRequestException('Ce bon fidélité est personnel : connectez-vous avec le compte qui l’a obtenu.');
+    }
+    const value = Number(coupon.value);
+    const discount = coupon.type === 'percent' ? (subtotal * Math.min(value, 100)) / 100 : value;
+    await manager.query(`update coupons set used_count = used_count + 1, updated_at = now() where id = $1`, [coupon.id]);
+    return { couponId: Number(coupon.id), discount: round2(Math.min(Math.max(discount, 0), subtotal)) };
   }
 
   async findAll(userId?: string): Promise<Order[]> {
@@ -170,10 +270,15 @@ export class OrdersService implements OnModuleInit {
   }
 
   async findOne(id: string): Promise<Order> {
-    return this.orderRepository.findOne({
+    const order = await this.orderRepository.findOne({
       where: { id },
       relations: ['items', 'user'],
     });
+    if (order?.user) {
+      const { id: uid, email, firstName, lastName, phone } = order.user;
+      order.user = { id: uid, email, firstName, lastName, phone } as Order['user'];
+    }
+    return order;
   }
 
   /** Pour un client : la commande uniquement si elle lui appartient. */

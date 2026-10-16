@@ -10,8 +10,9 @@ export class CouponsService {
     private couponRepository: Repository<Coupon>,
   ) {}
 
-  async validate(code: string, orderAmount?: number) {
-    const normalized = code?.trim().toUpperCase();
+  async validate(code: string, orderAmount?: number, userId: string | null = null) {
+    const normalized = typeof code === 'string' ? code.trim().toUpperCase().substring(0, 40) : '';
+    orderAmount = orderAmount != null && Number.isFinite(Number(orderAmount)) ? Math.max(0, Number(orderAmount)) : undefined;
     if (!normalized) {
       return { valid: false, message: 'Code invalide' };
     }
@@ -36,8 +37,15 @@ export class CouponsService {
     if (orderAmount != null && coupon.minOrderAmount != null && Number(coupon.minOrderAmount) > orderAmount) {
       return {
         valid: false,
-        message: `Montant minimum de commande: ${Number(coupon.minOrderAmount).toFixed(2)} €`,
+        message: `Montant minimum de commande : ${Number(coupon.minOrderAmount).toLocaleString('fr-FR')} F CFA`,
       };
+    }
+    const [owner] = await this.couponRepository.query(
+      `select user_id from user_loyalty_redemptions where coupon_id = $1`,
+      [coupon.id],
+    );
+    if (owner && owner.user_id !== userId) {
+      return { valid: false, message: 'Ce bon fidélité est personnel : connectez-vous avec le compte qui l’a obtenu.' };
     }
 
     const value = Number(coupon.value);

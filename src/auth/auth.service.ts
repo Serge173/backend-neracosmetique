@@ -191,8 +191,8 @@ export class AuthService {
       throw new BadRequestException('Mot de passe actuel incorrect');
     }
     const newRaw = String(newPassword ?? '').trim();
-    if (newRaw.length < 6) {
-      throw new BadRequestException('Le nouveau mot de passe doit contenir au moins 6 caractères');
+    if (newRaw.length < 8 || newRaw.length > 128) {
+      throw new BadRequestException('Le nouveau mot de passe doit contenir entre 8 et 128 caractères');
     }
     if (current === newRaw) {
       throw new BadRequestException('Le nouveau mot de passe doit être différent de l\'actuel');
