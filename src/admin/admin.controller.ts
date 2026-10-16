@@ -11,33 +11,11 @@ import { ContactService } from '../contact/contact.service';
 import { SlidesService } from '../slides/slides.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { AdminGuard } from '../auth/guards/admin.guard';
-import { join } from 'path';
-import { v4 as uuidv4 } from 'uuid';
-import * as fs from 'fs';
 import { Request } from 'express';
-import { put } from '@vercel/blob';
+import { storeImage, UploadedImageFile } from '../common/image-storage';
 
 const ORDER_STATUSES = ['pending', 'paid', 'processing', 'shipped', 'delivered', 'cancelled'] as const;
 type OrderStatus = (typeof ORDER_STATUSES)[number];
-
-interface UploadedFileDto {
-  buffer: Buffer;
-  originalname?: string;
-}
-
-function detectImageType(buf: Buffer): { ext: string; mime: string } | null {
-  if (buf.length < 12) return null;
-  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return { ext: '.jpg', mime: 'image/jpeg' };
-  if (buf.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
-    return { ext: '.png', mime: 'image/png' };
-  }
-  const head6 = buf.subarray(0, 6).toString('ascii');
-  if (head6 === 'GIF87a' || head6 === 'GIF89a') return { ext: '.gif', mime: 'image/gif' };
-  if (buf.subarray(0, 4).toString('ascii') === 'RIFF' && buf.subarray(8, 12).toString('ascii') === 'WEBP') {
-    return { ext: '.webp', mime: 'image/webp' };
-  }
-  return null;
-}
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, AdminGuard)
@@ -181,34 +159,9 @@ export class AdminController {
 
   @Post('upload/image')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 4 * 1024 * 1024, files: 1 } }))
-  async uploadImage(@UploadedFile() file: UploadedFileDto, @Req() req: Request): Promise<{ url: string }> {
-    if (!file?.buffer?.length) {
-      throw new BadRequestException('Aucun fichier envoyé');
-    }
-    const detected = detectImageType(file.buffer);
-    if (!detected) {
-      throw new BadRequestException('Format image accepté : JPG, PNG, GIF, WebP (4 Mo max)');
-    }
-    const filename = `${uuidv4()}${detected.ext}`;
-
-    if (process.env.BLOB_READ_WRITE_TOKEN) {
-      const blob = await put(`products/${filename}`, file.buffer, {
-        access: 'public',
-        contentType: detected.mime,
-        addRandomSuffix: false,
-        cacheControlMaxAge: 31536000,
-      });
-      return { url: blob.url };
-    }
-    if (process.env.VERCEL) {
-      throw new BadRequestException('Stockage des images non configuré (BLOB_READ_WRITE_TOKEN manquant)');
-    }
-
-    const dir = join(process.cwd(), 'uploads', 'products');
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(join(dir, filename), file.buffer);
-    const baseUrl = `${req.protocol}://${req.get('host')}`;
-    return { url: `${baseUrl}/uploads/products/${filename}` };
+  async uploadImage(@UploadedFile() file: UploadedImageFile, @Req() req: Request): Promise<{ url: string }> {
+    const url = await storeImage(file, 'products', `${req.protocol}://${req.get('host')}`, '4 Mo');
+    return { url };
   }
 
   @Post('products')

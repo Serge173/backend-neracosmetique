@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, Injectable, Logger, NotFoundExc
 import { InjectDataSource } from '@nestjs/typeorm';
 import { randomInt } from 'crypto';
 import { DataSource, EntityManager } from 'typeorm';
+import { deleteStoredImage, storeImage, UploadedImageFile } from '../common/image-storage';
 import { Coupon } from '../coupons/entities/coupon.entity';
 import { LOYALTY, LOYALTY_TIERS, pointsForAmount, tierFor } from './loyalty';
 
@@ -31,6 +32,11 @@ export class AccountService implements OnModuleInit {
   constructor(@InjectDataSource() private dataSource: DataSource) {}
 
   async onModuleInit(): Promise<void> {
+    try {
+      await this.dataSource.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url VARCHAR(500)`);
+    } catch (err: any) {
+      this.logger.error('Failed to ensure users.avatar_url', err?.message ?? String(err));
+    }
     try {
       await this.dataSource.query(`
         CREATE TABLE IF NOT EXISTS user_favorites (
@@ -511,6 +517,29 @@ export class AccountService implements OnModuleInit {
         remaining: loyalty.available - points,
       };
     });
+  }
+
+  /* ------------------------------------------------------------------ */
+  /* Photo de profil                                                     */
+  /* ------------------------------------------------------------------ */
+
+  async setAvatar(userId: string, file: UploadedImageFile | undefined, localBaseUrl: string) {
+    const [user] = await this.dataSource.query(`select avatar_url from users where id = $1`, [userId]);
+    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    const avatarUrl = await storeImage(file, 'avatars', localBaseUrl, '2 Mo');
+    await this.dataSource.query(`update users set avatar_url = $2, updated_at = now() where id = $1`, [userId, avatarUrl]);
+    await deleteStoredImage(user.avatar_url, 'avatars');
+    return { avatarUrl };
+  }
+
+  async removeAvatar(userId: string) {
+    const [user] = await this.dataSource.query(`select avatar_url from users where id = $1`, [userId]);
+    if (!user) throw new NotFoundException('Utilisateur introuvable');
+    if (user.avatar_url) {
+      await this.dataSource.query(`update users set avatar_url = null, updated_at = now() where id = $1`, [userId]);
+      await deleteStoredImage(user.avatar_url, 'avatars');
+    }
+    return { avatarUrl: null };
   }
 
   private async lockUser(m: EntityManager, userId: string) {

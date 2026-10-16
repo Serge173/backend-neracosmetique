@@ -1,6 +1,8 @@
-import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UseGuards } from '@nestjs/common';
+import { Body, Controller, Delete, Get, Param, ParseIntPipe, Patch, Post, Request, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { Throttle } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { UploadedImageFile } from '../common/image-storage';
 import { AccountService } from './account.service';
 
 @Controller('account')
@@ -67,6 +69,18 @@ export class AccountController {
   @Delete('reviews/:id')
   deleteReview(@Request() req, @Param('id', ParseIntPipe) id: number) {
     return this.account.deleteReview(req.user.sub, id);
+  }
+
+  @Post('avatar')
+  @Throttle({ default: { limit: 10, ttl: 60000 } })
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 2 * 1024 * 1024, files: 1 } }))
+  uploadAvatar(@Request() req, @UploadedFile() file: UploadedImageFile) {
+    return this.account.setAvatar(req.user.sub, file, `${req.protocol}://${req.get('host')}`);
+  }
+
+  @Delete('avatar')
+  removeAvatar(@Request() req) {
+    return this.account.removeAvatar(req.user.sub);
   }
 
   @Get('loyalty')
