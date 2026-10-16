@@ -6,8 +6,8 @@ dist/
 
 # Environment (secrets - ne jamais committer)
 .env
-.env.local
-.env.*.local
+.env.*
+!.env.example
 env.render.txt
 
 # Images envoyees en local (en production : Vercel Blob)
