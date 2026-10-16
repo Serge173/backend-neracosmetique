@@ -5,9 +5,13 @@ import { OrdersService } from './orders.service';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { DeliveryZone } from './entities/delivery-zone.entity';
+import { ProductsModule } from '../products/products.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Order, OrderItem, DeliveryZone])],
+  imports: [
+    TypeOrmModule.forFeature([Order, OrderItem, DeliveryZone]),
+    ProductsModule,
+  ],
   controllers: [OrdersController],
   providers: [OrdersService],
   exports: [OrdersService],

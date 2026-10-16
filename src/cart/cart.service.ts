@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, Logger } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { v4 as uuidv4 } from 'uuid';
@@ -34,6 +34,8 @@ const emptyCartData = (): CartData => ({
 
 @Injectable()
 export class CartService {
+  private readonly logger = new Logger(CartService.name);
+
   constructor(
     @InjectRepository(Cart)
     private cartRepository: Repository<Cart>,
@@ -53,29 +55,50 @@ export class CartService {
   }
 
   async addItem(userId: string, productId: number, quantity: number): Promise<CartData> {
-    const product = await this.productsService.findOne(productId);
-    if (!product) throw new NotFoundException('Product not found');
-
-    let cart = await this.cartRepository.findOne({ where: { userId }, relations: ['items'] });
-    if (!cart) {
-      cart = this.cartRepository.create({ id: uuidv4(), userId });
-      await this.cartRepository.save(cart);
+    const pid = Number(productId);
+    const qty = Math.max(1, Math.floor(Number(quantity) || 1));
+    if (!Number.isInteger(pid) || pid <= 0) {
+      throw new NotFoundException('Produit invalide');
     }
 
-    let item = await this.cartItemRepository.findOne({ where: { cartId: cart.id, productId } });
-    if (item) {
-      item.quantity += quantity;
-      await this.cartItemRepository.save(item);
-    } else {
-      item = this.cartItemRepository.create({ cartId: cart.id, productId, quantity });
-      await this.cartItemRepository.save(item);
-    }
+    try {
+      const product = await this.productsService.findOne(pid);
+      if (!product) throw new NotFoundException('Produit introuvable');
 
-    const fullCart = await this.cartRepository.findOne({
-      where: { id: cart.id },
-      relations: ['items', 'items.product', 'items.product.images'],
-    });
-    return this.toCartData(fullCart!);
+      let cart = await this.cartRepository.findOne({ where: { userId }, relations: ['items'] });
+      if (!cart) {
+        cart = this.cartRepository.create({ id: uuidv4(), userId });
+        await this.cartRepository.save(cart);
+      }
+
+      let item = await this.cartItemRepository.findOne({ where: { cartId: cart.id, productId: pid } });
+      if (item) {
+        item.quantity += qty;
+        await this.cartItemRepository.save(item);
+      } else {
+        item = this.cartItemRepository.create({ cartId: cart.id, productId: pid, quantity: qty });
+        await this.cartItemRepository.save(item);
+      }
+
+      try {
+        const fullCart = await this.cartRepository.findOne({
+          where: { id: cart.id },
+          relations: ['items', 'items.product', 'items.product.images'],
+        });
+        if (!fullCart) return this.getCart(userId);
+        return this.toCartData(fullCart);
+      } catch {
+        const fullCart = await this.cartRepository.findOne({
+          where: { id: cart.id },
+          relations: ['items', 'items.product'],
+        });
+        return fullCart ? this.toCartData(fullCart) : this.getCart(userId);
+      }
+    } catch (err) {
+      if (err instanceof NotFoundException) throw err;
+      this.logger.error('addItem failed', err instanceof Error ? err.stack : String(err));
+      throw err;
+    }
   }
 
   async updateItemQuantity(userId: string, itemId: number, quantity: number): Promise<CartData> {
@@ -112,11 +135,12 @@ export class CartService {
   }
 
   private toCartData(cart: Cart): CartData {
-    const items: CartItemData[] = (cart.items || []).map((i) => {
-      const p = i.product;
-      const price = p ? Number(p.promoPrice ?? p.price) : 0;
-      const productImage = p?.images?.length
-        ? (p.images.find((img: { isPrimary: boolean }) => img.isPrimary)?.url ?? p.images[0]?.url)
+    const items: CartItemData[] = (cart?.items || []).map((i) => {
+      const p = i?.product;
+      const price = p != null ? Number(p.promoPrice ?? p.price) : 0;
+      const images = p?.images;
+      const productImage = Array.isArray(images) && images.length
+        ? (images.find((img: { isPrimary?: boolean }) => img.isPrimary)?.url ?? images[0]?.url)
         : undefined;
       return {
         id: i.id,

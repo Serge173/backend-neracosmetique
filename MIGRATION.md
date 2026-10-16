@@ -44,3 +44,15 @@ La table `coupons` doit exister (entité déjà présente). Structure attendue :
 - `id`, `code` (unique), `type` (enum 'percent' | 'fixed'), `value`, `min_order_amount`, `max_uses`, `used_count`, `valid_from`, `valid_to`, `is_active`, `created_at`, `updated_at`
 
 Si elle n’existe pas, la créer via TypeORM en mettant temporairement `synchronize: true` une fois, ou en créant la table manuellement selon l’entité `coupons/entities/coupon.entity.ts`.
+
+## 5. Colonnes infos produit dans `order_items` (PostgreSQL)
+
+Pour afficher le nom exact, la description courte et la marque des produits dans les commandes (admin et client) :
+
+```sql
+ALTER TABLE order_items
+  ADD COLUMN IF NOT EXISTS product_short_description TEXT,
+  ADD COLUMN IF NOT EXISTS product_brand_name VARCHAR(100);
+```
+
+Voir `migrations/002-order-items-product-info.sql`.

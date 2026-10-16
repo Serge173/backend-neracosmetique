@@ -39,6 +39,12 @@ export class OrderItem {
   @Column({ name: 'product_image_url', nullable: true })
   productImageUrl: string;
 
+  @Column({ name: 'product_short_description', type: 'text', nullable: true })
+  productShortDescription: string;
+
+  @Column({ name: 'product_brand_name', length: 100, nullable: true })
+  productBrandName: string;
+
   @CreateDateColumn({ name: 'created_at' })
   createdAt: Date;
 }

@@ -21,9 +21,13 @@ import { User } from '../users/entities/user.entity';
             'JWT_SECRET is not configured. Set a strong secret in environment variables before starting the server.',
           );
         }
+        if (process.env.NODE_ENV === 'production' && secret.length < 32) {
+          throw new Error('JWT_SECRET must be at least 32 characters in production.');
+        }
         return {
           secret,
-          signOptions: { expiresIn: configService.get('JWT_EXPIRES_IN') || '15m' },
+          signOptions: { expiresIn: configService.get('JWT_EXPIRES_IN') || '15m', algorithm: 'HS256' },
+          verifyOptions: { algorithms: ['HS256'] },
         };
       },
       inject: [ConfigService],

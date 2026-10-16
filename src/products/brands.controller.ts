@@ -1,17 +1,12 @@
 import { Controller, Get } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
-import { Brand } from './entities/brand.entity';
+import { BrandsService } from './brands.service';
 
 @Controller('brands')
 export class BrandsController {
-  constructor(
-    @InjectRepository(Brand)
-    private brandRepository: Repository<Brand>,
-  ) {}
+  constructor(private brandsService: BrandsService) {}
 
   @Get()
-  async findAll() {
-    return this.brandRepository.find({ order: { name: 'ASC' } });
+  findAll() {
+    return this.brandsService.findAll();
   }
 }

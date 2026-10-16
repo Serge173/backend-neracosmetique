@@ -34,6 +34,36 @@ export class ProductsService {
   ) {}
 
   async findAll(filters: any): Promise<{ products: Product[]; total: number; page: number; limit: number; totalPages: number }> {
+    const page = Math.max(1, parseInt(String(filters.page), 10) || 1);
+    const limit = Math.min(500, Math.max(1, parseInt(String(filters.limit), 10) || 12));
+    const skip = (page - 1) * limit;
+
+    const baseQb = this.productRepository.createQueryBuilder('product');
+    if (filters.forAdmin) {
+      baseQb.where('1=1');
+    } else {
+      baseQb.where('product.isActive = :isActive', { isActive: true });
+    }
+    if (filters.category) {
+      baseQb.andWhere('product.categoryId = :categoryId', { categoryId: Number(filters.category) });
+    }
+    if (filters.brand) {
+      baseQb.andWhere('product.brandId = :brandId', { brandId: Number(filters.brand) });
+    }
+    if (filters.q && String(filters.q).trim()) {
+      const searchTerm = '%' + String(filters.q).trim().replace(/%/g, '\\%') + '%';
+      baseQb.andWhere('(product.name LIKE :searchTerm OR product.slug LIKE :searchTerm)', { searchTerm });
+    }
+    if (filters.minPrice) {
+      baseQb.andWhere('product.price >= :minPrice', { minPrice: Number(filters.minPrice) });
+    }
+    if (filters.maxPrice) {
+      baseQb.andWhere('product.price <= :maxPrice', { maxPrice: Number(filters.maxPrice) });
+    }
+
+    const total = await baseQb.getCount();
+
+    const sort = (filters.sort as string) || 'newest';
     const query = this.productRepository.createQueryBuilder('product')
       .leftJoinAndSelect('product.images', 'images')
       .leftJoinAndSelect('product.category', 'category')
@@ -43,25 +73,22 @@ export class ProductsService {
     } else {
       query.where('product.isActive = :isActive', { isActive: true });
     }
-
     if (filters.category) {
-      query.andWhere('product.categoryId = :categoryId', { categoryId: filters.category });
+      query.andWhere('product.categoryId = :categoryId', { categoryId: Number(filters.category) });
     }
     if (filters.brand) {
-      query.andWhere('product.brandId = :brandId', { brandId: filters.brand });
+      query.andWhere('product.brandId = :brandId', { brandId: Number(filters.brand) });
     }
     if (filters.q && String(filters.q).trim()) {
       const searchTerm = '%' + String(filters.q).trim().replace(/%/g, '\\%') + '%';
       query.andWhere('(product.name LIKE :searchTerm OR product.slug LIKE :searchTerm)', { searchTerm });
     }
     if (filters.minPrice) {
-      query.andWhere('product.price >= :minPrice', { minPrice: filters.minPrice });
+      query.andWhere('product.price >= :minPrice', { minPrice: Number(filters.minPrice) });
     }
     if (filters.maxPrice) {
-      query.andWhere('product.price <= :maxPrice', { maxPrice: filters.maxPrice });
+      query.andWhere('product.price <= :maxPrice', { maxPrice: Number(filters.maxPrice) });
     }
-
-    const sort = (filters.sort as string) || 'newest';
     if (sort === 'newest') {
       query.orderBy('product.createdAt', 'DESC');
     } else if (sort === 'price_asc') {
@@ -72,11 +99,7 @@ export class ProductsService {
       query.orderBy('product.createdAt', 'DESC');
     }
 
-    const page = filters.page || 1;
-    const limit = filters.limit || 12;
-    const skip = (page - 1) * limit;
-
-    const [products, total] = await query.skip(skip).take(limit).getManyAndCount();
+    const products = await query.skip(skip).take(limit).getMany();
     products.forEach((p) => this.sanitizeProductImages(p));
 
     return {
@@ -84,7 +107,7 @@ export class ProductsService {
       total,
       page,
       limit,
-      totalPages: Math.ceil(total / limit),
+      totalPages: Math.ceil(total / limit) || 1,
     };
   }
 

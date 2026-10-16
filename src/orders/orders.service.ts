@@ -1,14 +1,16 @@
-import { Injectable, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
+import { DeliveryZone } from './entities/delivery-zone.entity';
+import { ProductsService } from '../products/products.service';
 import { v4 as uuidv4 } from 'uuid';
 
 const SAFE_PLACEHOLDER_IMAGE = 'https://via.placeholder.com/400?text=Produit';
 
 @Injectable()
-export class OrdersService {
+export class OrdersService implements OnModuleInit {
   private readonly logger = new Logger(OrdersService.name);
 
   constructor(
@@ -16,7 +18,27 @@ export class OrdersService {
     private orderRepository: Repository<Order>,
     @InjectRepository(OrderItem)
     private orderItemRepository: Repository<OrderItem>,
+    @InjectRepository(DeliveryZone)
+    private deliveryZoneRepository: Repository<DeliveryZone>,
+    private productsService: ProductsService,
   ) {}
+
+  async onModuleInit(): Promise<void> {
+    // Sécurise les colonnes infos produit sur order_items même si la migration SQL n'a pas été exécutée manuellement.
+    try {
+      await this.orderItemRepository.query(`
+        ALTER TABLE order_items
+          ADD COLUMN IF NOT EXISTS product_short_description TEXT,
+          ADD COLUMN IF NOT EXISTS product_brand_name VARCHAR(100)
+      `);
+      this.logger.log('order_items product info columns are present.');
+    } catch (err: any) {
+      this.logger.error(
+        'Failed to ensure order_items product info columns',
+        err?.message ?? String(err),
+      );
+    }
+  }
 
   async create(userId: string | null, orderData: any): Promise<Order> {
     // Génère un numéro de commande court pour respecter la taille de la colonne SQL
@@ -24,6 +46,15 @@ export class OrdersService {
     const uuidPart = uuidv4().replace(/-/g, '').substring(0, 4).toUpperCase();
     const orderNumber = `NERA-${timestampPart}-${uuidPart}`.substring(0, 20);
     const items = orderData.items || [];
+
+    let deliveryZoneId: number | null = orderData.deliveryZoneId != null ? Number(orderData.deliveryZoneId) : null;
+    if (deliveryZoneId != null && (Number.isNaN(deliveryZoneId) || deliveryZoneId <= 0)) {
+      deliveryZoneId = null;
+    }
+    if (deliveryZoneId != null) {
+      const zone = await this.deliveryZoneRepository.findOne({ where: { id: deliveryZoneId } });
+      if (!zone) deliveryZoneId = null;
+    }
 
     try {
       const order = this.orderRepository.create({
@@ -36,7 +67,7 @@ export class OrdersService {
         addressLine2: orderData.addressLine2 != null ? String(orderData.addressLine2).trim() : null,
         city: String(orderData.city ?? '').trim(),
         postalCode: orderData.postalCode != null ? String(orderData.postalCode).trim() : null,
-        deliveryZoneId: orderData.deliveryZoneId ?? null,
+        deliveryZoneId,
         deliveryMethod: orderData.deliveryMethod ?? null,
         paymentMethod: String(orderData.paymentMethod ?? 'mtn_momo').trim(),
         subtotal: Number(orderData.subtotal) || 0,
@@ -69,15 +100,34 @@ export class OrdersService {
           }
         }
 
+        let productShortDescription: string | null = null;
+        let productBrandName: string | null = null;
+        let productName = (it.productName ?? 'Produit').substring(0, maxVarcharLength);
+        let productSlug = (it.productSlug ?? '').substring(0, maxVarcharLength);
+        try {
+          const productId = Number(it.productId);
+          if (productId && !Number.isNaN(productId)) {
+            const product = await this.productsService.findOne(productId);
+            productName = (product?.name ?? productName).substring(0, maxVarcharLength);
+            productSlug = (product?.slug ?? productSlug).substring(0, maxVarcharLength);
+            productShortDescription = product?.shortDescription ? String(product.shortDescription).substring(0, 500) : null;
+            productBrandName = product?.brand?.name ? String(product.brand.name).substring(0, 100) : null;
+          }
+        } catch {
+          // Garder les valeurs du frontend si le produit n'existe plus
+        }
+
         const orderItem = this.orderItemRepository.create({
           orderId: savedOrder.id,
           productId: it.productId,
-          productName: (it.productName ?? 'Produit').substring(0, maxVarcharLength),
-          productSlug: (it.productSlug ?? '').substring(0, maxVarcharLength),
+          productName,
+          productSlug,
           quantity,
           unitPrice,
           totalPrice: unitPrice * quantity,
           productImageUrl,
+          productShortDescription,
+          productBrandName,
         });
         await this.orderItemRepository.save(orderItem);
       }
@@ -133,14 +183,22 @@ export class OrdersService {
     });
   }
 
-  /** Stats : nombre de commandes, CA total, répartition par statut et ventes par catégorie. */
+  /** Stats : nombre de commandes, CA total, répartition par statut, ventes par catégorie et par mois. */
   async getStats(): Promise<{
     totalOrders: number;
     totalSales: number;
     byStatus: Record<Order['status'], number>;
     categoriesSales: { categoryId: number; categoryName: string; totalSales: number }[];
+    totalsByStatusAmount: Record<Order['status'], number>;
+    monthlySales: {
+      year: number;
+      month: number;
+      label: string;
+      totalSales: number;
+      ordersCount: number;
+    }[];
   }> {
-    const orders = await this.orderRepository.find({ select: ['total', 'status'] });
+    const orders = await this.orderRepository.find({ select: ['id', 'total', 'status', 'createdAt'] });
     const totalOrders = orders.length;
     const totalSales = orders.reduce((sum, o) => sum + Number(o.total || 0), 0);
 
@@ -152,9 +210,18 @@ export class OrdersService {
       delivered: 0,
       cancelled: 0,
     };
+    const totalsByStatusAmount: Record<Order['status'], number> = {
+      pending: 0,
+      paid: 0,
+      processing: 0,
+      shipped: 0,
+      delivered: 0,
+      cancelled: 0,
+    };
     for (const o of orders) {
       if (o.status in byStatus) {
         byStatus[o.status]++;
+        totalsByStatusAmount[o.status] += Number(o.total || 0);
       }
     }
 
@@ -177,7 +244,34 @@ export class OrdersService {
       totalSales: Number(row.totalSales || 0),
     }));
 
-    return { totalOrders, totalSales, byStatus, categoriesSales };
+    // Ventes mensuelles (PostgreSQL)
+    const rawMonthlySales = await this.orderRepository
+      .createQueryBuilder('order')
+      .select(`EXTRACT(YEAR FROM "order"."created_at")`, 'year')
+      .addSelect(`EXTRACT(MONTH FROM "order"."created_at")`, 'month')
+      .addSelect('SUM(order.total)', 'totalSales')
+      .addSelect('COUNT(order.id)', 'ordersCount')
+      .groupBy('year')
+      .addGroupBy('month')
+      .orderBy('year', 'ASC')
+      .addOrderBy('month', 'ASC')
+      .getRawMany();
+
+    const monthNames = ['Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Juin', 'Juil', 'Août', 'Sep', 'Oct', 'Nov', 'Déc'];
+    const monthlySales = rawMonthlySales.map((row: any) => {
+      const year = Number(row.year);
+      const month = Number(row.month);
+      const label = `${monthNames[month - 1] || month}/${year}`;
+      return {
+        year,
+        month,
+        label,
+        totalSales: Number(row.totalSales || 0),
+        ordersCount: Number(row.ordersCount || 0),
+      };
+    });
+
+    return { totalOrders, totalSales, byStatus, categoriesSales, totalsByStatusAmount, monthlySales };
   }
 
   async updateStatus(id: string, status: Order['status']): Promise<Order> {

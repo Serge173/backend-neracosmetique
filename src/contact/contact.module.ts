@@ -8,5 +8,6 @@ import { ContactMessage } from './entities/contact-message.entity';
   imports: [TypeOrmModule.forFeature([ContactMessage])],
   controllers: [ContactController],
   providers: [ContactService],
+  exports: [ContactService],
 })
 export class ContactModule {}

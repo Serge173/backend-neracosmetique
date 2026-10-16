@@ -1,7 +1,8 @@
 import { Module } from '@nestjs/common';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { ConfigModule } from '@nestjs/config';
-import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
+import { ThrottlerModule } from '@nestjs/throttler';
+import { ClientIpThrottlerGuard } from './common/client-ip-throttler.guard';
 import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AuthModule } from './auth/auth.module';
@@ -16,6 +17,7 @@ import { ReviewsModule } from './reviews/reviews.module';
 import { ContactModule } from './contact/contact.module';
 import { NewsletterModule } from './newsletter/newsletter.module';
 import { AdminModule } from './admin/admin.module';
+import { SlidesModule } from './slides/slides.module';
 
 @Module({
   imports: [
@@ -25,25 +27,31 @@ import { AdminModule } from './admin/admin.module';
     ThrottlerModule.forRoot([
       { ttl: 60000, limit: 100 },
     ]),
-    TypeOrmModule.forRoot(
-      process.env.DATABASE_URL
+    TypeOrmModule.forRoot({
+      type: 'postgres',
+      ...(process.env.DATABASE_URL
         ? {
-            type: 'postgres',
             url: process.env.DATABASE_URL,
-            autoLoadEntities: true,
-            synchronize: true,
+            ssl: { rejectUnauthorized: true },
           }
         : {
-            type: 'postgres',
             host: process.env.DB_HOST,
             port: parseInt(process.env.DB_PORT || '5432'),
             username: process.env.DB_USERNAME,
             password: process.env.DB_PASSWORD,
             database: process.env.DB_DATABASE,
-            autoLoadEntities: true,
-            synchronize: true,
-          },
-    ),
+          }),
+      autoLoadEntities: true,
+      synchronize: false,
+      retryAttempts: process.env.VERCEL ? 2 : 9,
+      retryDelay: process.env.VERCEL ? 1000 : 3000,
+      extra: {
+        max: process.env.VERCEL ? 3 : 10,
+        idleTimeoutMillis: 10000,
+        connectionTimeoutMillis: 10000,
+        statement_timeout: 15000,
+      },
+    }),
     AuthModule,
     UsersModule,
     ProductsModule,
@@ -55,13 +63,14 @@ import { AdminModule } from './admin/admin.module';
     ReviewsModule,
     ContactModule,
     NewsletterModule,
+    SlidesModule,
     AdminModule,
   ],
   controllers: [AppController],
   providers: [
     {
       provide: APP_GUARD,
-      useClass: ThrottlerGuard,
+      useClass: ClientIpThrottlerGuard,
     },
   ],
 })

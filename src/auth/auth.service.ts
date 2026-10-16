@@ -95,20 +95,34 @@ export class AuthService {
     return user;
   }
 
+  private getRefreshSecret(): string {
+    const refreshSecret = this.configService.get<string>('JWT_REFRESH_SECRET');
+    if (refreshSecret) return refreshSecret;
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_REFRESH_SECRET must be configured in production');
+    }
+    return this.configService.get<string>('JWT_SECRET') + ':refresh';
+  }
+
   private generateTokens(user: User) {
     const payload = { sub: user.id, email: user.email, role: user.role };
-    const refreshSecret = this.configService.get('JWT_REFRESH_SECRET') || this.configService.get('JWT_SECRET');
     const refreshExpires = this.configService.get('JWT_REFRESH_EXPIRES_IN') || '7d';
     return {
-      accessToken: this.jwtService.sign(payload),
-      refreshToken: this.jwtService.sign(payload, { secret: refreshSecret, expiresIn: refreshExpires }),
+      accessToken: this.jwtService.sign({ ...payload, typ: 'access' }),
+      refreshToken: this.jwtService.sign(
+        { sub: user.id, typ: 'refresh' },
+        { secret: this.getRefreshSecret(), expiresIn: refreshExpires },
+      ),
     };
   }
 
   async refreshToken(refreshToken: string) {
-    const refreshSecret = this.configService.get('JWT_REFRESH_SECRET') || this.configService.get('JWT_SECRET');
+    if (typeof refreshToken !== 'string' || !refreshToken || refreshToken.length > 2048) {
+      throw new UnauthorizedException('Token de rafraîchissement invalide ou expiré');
+    }
     try {
-      const payload = this.jwtService.verify(refreshToken, { secret: refreshSecret });
+      const payload = this.jwtService.verify(refreshToken, { secret: this.getRefreshSecret() });
+      if (payload?.typ !== 'refresh') throw new Error('wrong token type');
       const user = await this.validateUser(payload.sub);
       const tokens = this.generateTokens(user);
       return { ...tokens, user: this.sanitizeUser(user) };
@@ -123,20 +137,31 @@ export class AuthService {
       return { success: true, message: 'Si cet email est associé à un compte, vous recevrez un lien de réinitialisation.' };
     }
     const token = crypto.randomBytes(32).toString('hex');
-    user.resetToken = token;
+    user.resetToken = this.hashResetToken(token);
     user.resetTokenExpires = new Date(Date.now() + 60 * 60 * 1000);
     await this.userRepository.save(user);
     return { success: true, message: 'Si cet email est associé à un compte, vous recevrez un lien de réinitialisation.' };
   }
 
+  private hashResetToken(token: string): string {
+    return crypto.createHash('sha256').update(token).digest('hex');
+  }
+
   async resetPassword(token: string, newPassword: string) {
+    if (typeof token !== 'string' || !/^[a-f0-9]{64}$/i.test(token)) {
+      throw new BadRequestException('Lien invalide ou expiré');
+    }
     const user = await this.userRepository.findOne({
-      where: { resetToken: token },
+      where: { resetToken: this.hashResetToken(token) },
     });
     if (!user || !user.resetTokenExpires || user.resetTokenExpires < new Date()) {
       throw new BadRequestException('Lien invalide ou expiré');
     }
-    user.passwordHash = await bcrypt.hash(newPassword, 10);
+    const newRaw = String(newPassword ?? '').trim();
+    if (newRaw.length < 8 || newRaw.length > 128) {
+      throw new BadRequestException('Le mot de passe doit contenir entre 8 et 128 caractères');
+    }
+    user.passwordHash = await bcrypt.hash(newRaw, 10);
     user.resetToken = null;
     user.resetTokenExpires = null;
     await this.userRepository.save(user);

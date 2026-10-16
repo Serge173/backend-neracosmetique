@@ -10,6 +10,12 @@ dist/
 .env.*.local
 env.render.txt
 
+# Images envoyees en local (en production : Vercel Blob)
+uploads/
+
+# Vercel
+.vercel
+
 # Logs
 *.log
 npm-debug.log*
