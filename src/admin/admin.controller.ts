@@ -1,6 +1,7 @@
-import { Controller, Get, Post, Patch, Delete, Body, Param, Query, UseGuards, UseInterceptors, UploadedFile, Req, BadRequestException, Logger } from '@nestjs/common';
+import { Controller, Get, Post, Patch, Delete, Body, Param, ParseIntPipe, Query, UseGuards, UseInterceptors, UploadedFile, Req, BadRequestException, Logger } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { AdminService } from './admin.service';
+import { AdminInsightsService } from './admin-insights.service';
 import { ProductsService } from '../products/products.service';
 import { OrdersService } from '../orders/orders.service';
 import { CategoriesService } from '../categories/categories.service';
@@ -15,6 +16,9 @@ import { v4 as uuidv4 } from 'uuid';
 import * as fs from 'fs';
 import { Request } from 'express';
 import { put } from '@vercel/blob';
+
+const ORDER_STATUSES = ['pending', 'paid', 'processing', 'shipped', 'delivered', 'cancelled'] as const;
+type OrderStatus = (typeof ORDER_STATUSES)[number];
 
 interface UploadedFileDto {
   buffer: Buffer;
@@ -49,11 +53,102 @@ export class AdminController {
     private usersService: UsersService,
     private contactService: ContactService,
     private slidesService: SlidesService,
+    private insightsService: AdminInsightsService,
   ) {}
 
   @Get('stats')
   getStats() {
     return this.adminService.getStats();
+  }
+
+  @Get('dashboard')
+  getDashboard(@Query('days') days?: string, @Query('top') top?: string) {
+    return this.insightsService.getDashboard(days, top);
+  }
+
+  @Get('summary')
+  getSummary() {
+    return this.insightsService.getSummary();
+  }
+
+  @Get('search')
+  search(@Query('q') q?: string) {
+    return this.insightsService.search(q);
+  }
+
+  @Get('customers')
+  getCustomers(@Query('search') search?: string) {
+    return this.insightsService.getCustomers(search);
+  }
+
+  @Get('customers/:id')
+  getCustomer(@Param('id') id: string) {
+    return this.insightsService.getCustomer(id);
+  }
+
+  @Get('coupons')
+  getCoupons() {
+    return this.insightsService.getCoupons();
+  }
+
+  @Post('coupons')
+  createCoupon(@Body() body: any) {
+    return this.insightsService.createCoupon(body ?? {});
+  }
+
+  @Patch('coupons/:id')
+  updateCoupon(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
+    return this.insightsService.updateCoupon(id, body ?? {});
+  }
+
+  @Delete('coupons/:id')
+  deleteCoupon(@Param('id', ParseIntPipe) id: number) {
+    return this.insightsService.deleteCoupon(id);
+  }
+
+  @Get('reviews')
+  getReviews(@Query('status') status?: string) {
+    return this.insightsService.getReviews(status);
+  }
+
+  @Patch('reviews/:id')
+  updateReview(@Param('id', ParseIntPipe) id: number, @Body() body: { isApproved?: unknown }) {
+    return this.insightsService.setReviewApproval(id, body?.isApproved);
+  }
+
+  @Delete('reviews/:id')
+  deleteReview(@Param('id', ParseIntPipe) id: number) {
+    return this.insightsService.deleteReview(id);
+  }
+
+  @Get('newsletter')
+  getNewsletter() {
+    return this.insightsService.getNewsletter();
+  }
+
+  @Delete('newsletter/:id')
+  deleteSubscriber(@Param('id', ParseIntPipe) id: number) {
+    return this.insightsService.deleteSubscriber(id);
+  }
+
+  @Get('delivery-zones')
+  getDeliveryZones() {
+    return this.insightsService.getDeliveryZones();
+  }
+
+  @Post('delivery-zones')
+  createDeliveryZone(@Body() body: any) {
+    return this.insightsService.createDeliveryZone(body ?? {});
+  }
+
+  @Patch('delivery-zones/:id')
+  updateDeliveryZone(@Param('id', ParseIntPipe) id: number, @Body() body: any) {
+    return this.insightsService.updateDeliveryZone(id, body ?? {});
+  }
+
+  @Delete('delivery-zones/:id')
+  deleteDeliveryZone(@Param('id', ParseIntPipe) id: number) {
+    return this.insightsService.deleteDeliveryZone(id);
   }
 
   @Get('orders')
@@ -68,8 +163,10 @@ export class AdminController {
 
   @Patch('orders/:id/status')
   updateOrderStatus(@Param('id') id: string, @Body() body: { status: string }) {
-    const status = body.status as 'pending' | 'paid' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
-    return this.ordersService.updateStatus(id, status);
+    if (!ORDER_STATUSES.includes(body?.status as OrderStatus)) {
+      throw new BadRequestException('Statut de commande invalide');
+    }
+    return this.ordersService.updateStatus(id, body.status as OrderStatus);
   }
 
   @Get('products')
@@ -140,19 +237,30 @@ export class AdminController {
   }
 
   @Patch('users/:id/status')
-  updateUserStatus(@Param('id') id: string, @Body() body: { isActive?: boolean; role?: 'customer' | 'admin' }) {
+  updateUserStatus(@Req() req: Request, @Param('id') id: string, @Body() body: { isActive?: boolean; role?: 'customer' | 'admin' }) {
     const data: any = {};
-    if (typeof body.isActive === 'boolean') data.isActive = body.isActive;
-    if (body.role === 'customer' || body.role === 'admin') data.role = body.role;
+    if (typeof body?.isActive === 'boolean') data.isActive = body.isActive;
+    if (body?.role === 'customer' || body?.role === 'admin') data.role = body.role;
     if (Object.keys(data).length === 0) {
       throw new BadRequestException('Aucune modification fournie');
+    }
+    if (this.isSelf(req, id) && (data.isActive === false || data.role === 'customer')) {
+      throw new BadRequestException('Vous ne pouvez pas désactiver ou rétrograder votre propre compte');
     }
     return this.usersService.update(id, data);
   }
 
   @Delete('users/:id')
-  deleteUser(@Param('id') id: string) {
+  deleteUser(@Req() req: Request, @Param('id') id: string) {
+    if (this.isSelf(req, id)) {
+      throw new BadRequestException('Vous ne pouvez pas supprimer votre propre compte');
+    }
     return this.usersService.remove(id);
+  }
+
+  private isSelf(req: Request, id: string): boolean {
+    const user = (req as Request & { user?: { sub?: string; id?: string } }).user;
+    return !!user && (user.sub === id || user.id === id);
   }
 
   @Get('categories')

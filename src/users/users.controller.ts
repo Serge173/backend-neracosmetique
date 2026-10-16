@@ -9,12 +9,12 @@ export class UsersController {
 
   @Get('me')
   async getMe(@Request() req) {
-    return this.usersService.findOne(req.user.sub);
+    return this.usersService.findPublic(req.user.sub);
   }
 
   @Patch('me')
-  async updateMe(@Request() req, @Body() data: any) {
-    return this.usersService.update(req.user.sub, data);
+  async updateMe(@Request() req, @Body() data: Record<string, unknown>) {
+    return this.usersService.updateProfile(req.user.sub, data);
   }
 
   @Get('me/orders')
