@@ -9,7 +9,7 @@ export interface UploadedImageFile {
   originalname?: string;
 }
 
-export type ImageFolder = 'products' | 'avatars';
+export type ImageFolder = 'products' | 'avatars' | 'pages';
 
 const logger = new Logger('ImageStorage');
 

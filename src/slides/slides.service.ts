@@ -47,6 +47,13 @@ export class SlidesService implements OnModuleInit {
           [`https://images.unsplash.com/${oldPath}`, `https://images.unsplash.com/${newPath}`],
         );
       }
+      await this.slideRepository.query(
+        `UPDATE slides SET description = $2 WHERE description = $1`,
+        [
+          'Abidjan et intérieur du pays, paiement à la livraison ou Mobile Money sécurisé.',
+          'Abidjan et intérieur du pays, paiement en espèces à la livraison.',
+        ],
+      );
 
       const count = await this.slideRepository.count();
       if (count === 0) {
@@ -72,7 +79,7 @@ export class SlidesService implements OnModuleInit {
           }),
           this.slideRepository.create({
             title: 'Livraison rapide en Côte d’Ivoire',
-            description: 'Abidjan et intérieur du pays, paiement à la livraison ou Mobile Money sécurisé.',
+            description: 'Abidjan et intérieur du pays, paiement en espèces à la livraison.',
             imageUrl: 'https://images.unsplash.com/photo-1629198688000-71f23e745b6e?auto=format&fit=crop&w=2400&q=85',
             link: '/boutique',
             linkLabel: 'Commander maintenant',

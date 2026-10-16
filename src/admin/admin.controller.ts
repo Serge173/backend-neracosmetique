@@ -159,8 +159,9 @@ export class AdminController {
 
   @Post('upload/image')
   @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 4 * 1024 * 1024, files: 1 } }))
-  async uploadImage(@UploadedFile() file: UploadedImageFile, @Req() req: Request): Promise<{ url: string }> {
-    const url = await storeImage(file, 'products', `${req.protocol}://${req.get('host')}`, '4 Mo');
+  async uploadImage(@UploadedFile() file: UploadedImageFile, @Req() req: Request, @Query('folder') folder?: string): Promise<{ url: string }> {
+    const target = folder === 'pages' ? 'pages' : 'products';
+    const url = await storeImage(file, target, `${req.protocol}://${req.get('host')}`, '4 Mo');
     return { url };
   }
 
