@@ -3,5 +3,4 @@ dist
 uploads
 .env
 .env.*
-env.render.txt
 *.log
