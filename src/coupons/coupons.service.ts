@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Coupon } from './entities/coupon.entity';
+import { computeCouponDiscount } from './coupon-discount';
 
 @Injectable()
 export class CouponsService {
@@ -49,24 +50,16 @@ export class CouponsService {
     }
 
     const value = Number(coupon.value);
-    const discount = coupon.type === 'percent'
-      ? Math.min((orderAmount ?? 0) * (value / 100), orderAmount ?? 0)
-      : Math.min(value, orderAmount ?? value);
+    const discount = orderAmount != null
+      ? computeCouponDiscount(coupon.type, value, orderAmount)
+      : coupon.type === 'percent' ? 0 : Math.round(value);
 
     return {
       valid: true,
       message: 'Code appliqué',
-      discount: Math.round(discount * 100) / 100,
+      discount,
       type: coupon.type,
       value: value,
     };
-  }
-
-  async incrementUsage(code: string): Promise<void> {
-    const coupon = await this.couponRepository.findOne({ where: { code: code.trim().toUpperCase() } });
-    if (coupon) {
-      coupon.usedCount = (coupon.usedCount || 0) + 1;
-      await this.couponRepository.save(coupon);
-    }
   }
 }

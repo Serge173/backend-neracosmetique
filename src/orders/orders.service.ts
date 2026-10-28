@@ -5,6 +5,7 @@ import { Order } from './entities/order.entity';
 import { OrderItem } from './entities/order-item.entity';
 import { DeliveryZone } from './entities/delivery-zone.entity';
 import { v4 as uuidv4 } from 'uuid';
+import { computeCouponDiscount } from '../coupons/coupon-discount';
 
 const SAFE_PLACEHOLDER_IMAGE = 'https://via.placeholder.com/400?text=Produit';
 
@@ -251,10 +252,8 @@ export class OrdersService implements OnModuleInit {
     if (owner && owner.user_id !== userId) {
       throw new BadRequestException('Ce bon fidélité est personnel : connectez-vous avec le compte qui l’a obtenu.');
     }
-    const value = Number(coupon.value);
-    const discount = coupon.type === 'percent' ? (subtotal * Math.min(value, 100)) / 100 : value;
     await manager.query(`update coupons set used_count = used_count + 1, updated_at = now() where id = $1`, [coupon.id]);
-    return { couponId: Number(coupon.id), discount: round2(Math.min(Math.max(discount, 0), subtotal)) };
+    return { couponId: Number(coupon.id), discount: computeCouponDiscount(coupon.type, coupon.value, subtotal) };
   }
 
   async findAll(userId?: string): Promise<Order[]> {
@@ -388,9 +387,19 @@ export class OrdersService implements OnModuleInit {
   }
 
   async updateStatus(id: string, status: Order['status']): Promise<Order> {
-    const order = await this.findOne(id);
-    if (!order) throw new NotFoundException('Commande introuvable');
-    await this.orderRepository.update(id, { status });
+    await this.orderRepository.manager.transaction(async (manager) => {
+      const [order] = await manager.query(`select status, coupon_id from orders where id = $1 for update`, [id]);
+      if (!order) throw new NotFoundException('Commande introuvable');
+      await manager.query(`update orders set status = $2, updated_at = now() where id = $1`, [id, status]);
+      const wasCancelled = order.status === 'cancelled';
+      const isCancelled = status === 'cancelled';
+      if (order.coupon_id != null && wasCancelled !== isCancelled) {
+        await manager.query(
+          `update coupons set used_count = greatest(used_count + $2, 0), updated_at = now() where id = $1`,
+          [order.coupon_id, isCancelled ? -1 : 1],
+        );
+      }
+    });
     return this.findOne(id) as Promise<Order>;
   }
 }
