@@ -4,7 +4,7 @@ import { randomInt } from 'crypto';
 import { DataSource, EntityManager } from 'typeorm';
 import { deleteStoredImage, storeImage, UploadedImageFile } from '../common/image-storage';
 import { Coupon } from '../coupons/entities/coupon.entity';
-import { LOYALTY, LOYALTY_TIERS, pointsForAmount, tierFor } from './loyalty';
+import { LOYALTY, LOYALTY_TIERS, pointsForAmount, readLoyaltySettings, tierFor } from './loyalty';
 
 const IMAGE_SQL = (col: string) =>
   `(select pi.url from product_images pi where pi.product_id = ${col} order by pi.is_primary desc, pi.sort_order asc, pi.id asc limit 1)`;
@@ -164,7 +164,7 @@ export class AccountService implements OnModuleInit {
       reviewsCount: num(reviewRows[0]?.n),
       loyalty: {
         points: loyalty.available,
-        value: loyalty.available * LOYALTY.pointValue,
+        value: loyalty.available * loyalty.settings.pointValue,
         lifetime: loyalty.lifetime,
         tier: loyalty.tier,
       },
@@ -411,7 +411,8 @@ export class AccountService implements OnModuleInit {
   /* ------------------------------------------------------------------ */
 
   private async computeLoyalty(db: Executor, userId: string) {
-    const [userRows, earnedRows, spentRows] = await Promise.all([
+    const [settings, userRows, earnedRows, spentRows] = await Promise.all([
+      readLoyaltySettings(db),
       db.query(`select role, created_at from users where id = $1`, [userId]),
       db.query(
         `select id, order_number, updated_at, greatest(subtotal - discount_amount, 0) as amount
@@ -441,7 +442,7 @@ export class AccountService implements OnModuleInit {
     }
     const lifetime = history.reduce((sum: number, h: any) => sum + h.points, 0);
     const spent = num(spentRows[0]?.points);
-    return { lifetime, available: Math.max(0, lifetime - spent), spent, history, tier: tierFor(lifetime) };
+    return { lifetime, available: Math.max(0, lifetime - spent), spent, history, tier: tierFor(lifetime), settings };
   }
 
   async getLoyalty(userId: string) {
@@ -457,11 +458,11 @@ export class AccountService implements OnModuleInit {
     const now = Date.now();
     return {
       points: loyalty.available,
-      value: loyalty.available * LOYALTY.pointValue,
+      value: loyalty.available * loyalty.settings.pointValue,
       lifetime: loyalty.lifetime,
       tier: loyalty.tier,
       tiers: LOYALTY_TIERS,
-      rules: LOYALTY,
+      rules: { ...LOYALTY, pointValue: loyalty.settings.pointValue, redeemEnabled: loyalty.settings.redeemEnabled },
       history: loyalty.history.filter((h: any) => h.points > 0).slice(0, 50),
       vouchers: vouchers.map((v: any) => {
         const expired = v.valid_to && new Date(v.valid_to).getTime() <= now;
@@ -490,6 +491,9 @@ export class AccountService implements OnModuleInit {
     return this.dataSource.transaction(async (m) => {
       await this.lockUser(m, userId);
       const loyalty = await this.computeLoyalty(m, userId);
+      if (!loyalty.settings.redeemEnabled) {
+        throw new BadRequestException('La conversion des points est momentanément suspendue. Vos points restent acquis.');
+      }
       if (points > loyalty.available) throw new BadRequestException("Vous n'avez pas assez de points.");
 
       const validTo = new Date(Date.now() + LOYALTY.voucherValidityDays * 86400000);
@@ -502,7 +506,7 @@ export class AccountService implements OnModuleInit {
           m.create(Coupon, {
             code,
             type: 'fixed',
-            value: points * LOYALTY.pointValue,
+            value: points * loyalty.settings.pointValue,
             minOrderAmount: null,
             maxUses: 1,
             usedCount: 0,

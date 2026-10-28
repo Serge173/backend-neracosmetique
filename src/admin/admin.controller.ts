@@ -84,6 +84,16 @@ export class AdminController {
     return this.insightsService.deleteCoupon(id);
   }
 
+  @Get('loyalty-settings')
+  getLoyaltySettings() {
+    return this.insightsService.getLoyaltySettings();
+  }
+
+  @Patch('loyalty-settings')
+  updateLoyaltySettings(@Req() req: Request, @Body() body: any) {
+    return this.insightsService.updateLoyaltySettings(body ?? {}, (req as any).user?.sub ?? null);
+  }
+
   @Get('reviews')
   getReviews(@Query('status') status?: string) {
     return this.insightsService.getReviews(status);

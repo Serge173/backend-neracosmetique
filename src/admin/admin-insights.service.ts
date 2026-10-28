@@ -5,6 +5,7 @@ import { Coupon } from '../coupons/entities/coupon.entity';
 import { Review } from '../reviews/entities/review.entity';
 import { NewsletterSubscriber } from '../newsletter/entities/newsletter-subscriber.entity';
 import { DeliveryZone } from '../orders/entities/delivery-zone.entity';
+import { LOYALTY, readLoyaltySettings, writeLoyaltySettings } from '../account/loyalty';
 
 const DAY_MS = 86_400_000;
 const ALLOWED_PERIODS = [7, 30, 90, 365];
@@ -430,6 +431,35 @@ export class AdminInsightsService {
     if (c.validFrom && c.validTo && new Date(c.validFrom) > new Date(c.validTo)) {
       throw new BadRequestException('La date de fin doit être après la date de début');
     }
+  }
+
+  // ---------- Fidélité ----------
+
+  async getLoyaltySettings() {
+    const [settings, [stats]] = await Promise.all([
+      readLoyaltySettings(this.dataSource),
+      this.query(
+        `select count(*) as generated,
+                count(*) filter (where c.used_count > 0) as used,
+                coalesce(sum(c.value) filter (where c.used_count = 0 and c.is_active and (c.valid_to is null or c.valid_to > now())), 0) as outstanding
+           from user_loyalty_redemptions r join coupons c on c.id = r.coupon_id`,
+      ).catch(() => [{}]),
+    ]);
+    return {
+      ...settings,
+      welcomeBonus: LOYALTY.welcomeBonus,
+      amountPerPoint: LOYALTY.amountPerPoint,
+      stats: {
+        generated: toNumber(stats?.generated),
+        used: toNumber(stats?.used),
+        outstanding: toNumber(stats?.outstanding),
+      },
+    };
+  }
+
+  async updateLoyaltySettings(body: any, userId: string | null) {
+    await writeLoyaltySettings(this.dataSource, body ?? {}, userId);
+    return this.getLoyaltySettings();
   }
 
   async createCoupon(body: any) {
