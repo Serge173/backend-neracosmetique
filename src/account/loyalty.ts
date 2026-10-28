@@ -3,9 +3,11 @@ export const LOYALTY = {
   /** 1 point par tranche de 1 000 F CFA d'articles livrés (hors livraison, après réduction). */
   amountPerPoint: 1000,
   /** Valeur d'un point lors de la conversion en bon d'achat. */
-  pointValue: 10,
-  minRedeem: 100,
-  redeemStep: 100,
+  pointValue: 50,
+  /** Points offerts à la création du compte client. */
+  welcomeBonus: 10,
+  minRedeem: 1,
+  redeemStep: 1,
   voucherValidityDays: 90,
 } as const;
 

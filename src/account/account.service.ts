@@ -411,7 +411,8 @@ export class AccountService implements OnModuleInit {
   /* ------------------------------------------------------------------ */
 
   private async computeLoyalty(db: Executor, userId: string) {
-    const [earnedRows, spentRows] = await Promise.all([
+    const [userRows, earnedRows, spentRows] = await Promise.all([
+      db.query(`select role, created_at from users where id = $1`, [userId]),
       db.query(
         `select id, order_number, updated_at, greatest(subtotal - discount_amount, 0) as amount
            from orders where user_id = $1 and status = 'delivered' order by updated_at desc`,
@@ -425,13 +426,19 @@ export class AccountService implements OnModuleInit {
         [userId],
       ),
     ]);
-    const history = earnedRows.map((o: any) => ({
-      orderId: o.id,
-      orderNumber: o.order_number,
-      date: o.updated_at,
-      amount: num(o.amount),
-      points: pointsForAmount(num(o.amount)),
-    }));
+    const history: { type: 'order' | 'welcome'; orderId: string | null; orderNumber: string | null; date: string; amount: number; points: number }[] =
+      earnedRows.map((o: any) => ({
+        type: 'order' as const,
+        orderId: o.id,
+        orderNumber: o.order_number,
+        date: o.updated_at,
+        amount: num(o.amount),
+        points: pointsForAmount(num(o.amount)),
+      }));
+    const user = userRows[0];
+    if (user && user.role === 'customer' && LOYALTY.welcomeBonus > 0) {
+      history.push({ type: 'welcome', orderId: null, orderNumber: null, date: user.created_at, amount: 0, points: LOYALTY.welcomeBonus });
+    }
     const lifetime = history.reduce((sum: number, h: any) => sum + h.points, 0);
     const spent = num(spentRows[0]?.points);
     return { lifetime, available: Math.max(0, lifetime - spent), spent, history, tier: tierFor(lifetime) };
@@ -475,7 +482,9 @@ export class AccountService implements OnModuleInit {
     const points = Number(body?.points);
     if (!Number.isInteger(points) || points < LOYALTY.minRedeem || points % LOYALTY.redeemStep !== 0) {
       throw new BadRequestException(
-        `Choisissez un nombre de points multiple de ${LOYALTY.redeemStep} (minimum ${LOYALTY.minRedeem}).`,
+        LOYALTY.redeemStep > 1
+          ? `Choisissez un nombre de points multiple de ${LOYALTY.redeemStep} (minimum ${LOYALTY.minRedeem}).`
+          : `Choisissez un nombre entier de points (minimum ${LOYALTY.minRedeem}).`,
       );
     }
     return this.dataSource.transaction(async (m) => {
