@@ -54,11 +54,4 @@ export class AuthController {
       body.newPassword ?? '',
     );
   }
-
-  /** En dev uniquement : réinitialise le mot de passe d’un compte (email + newPassword). */
-  @Post('dev-reset-password')
-  @Throttle({ default: { limit: 2, ttl: 60000 } })
-  async devResetPassword(@Body() body: { email: string; newPassword: string }) {
-    return this.authService.devResetPassword(body.email ?? '', body.newPassword ?? '');
-  }
 }

@@ -202,28 +202,4 @@ export class AuthService {
     this.logger.log(`Password changed for user ${user.email}`);
     return { success: true, message: 'Mot de passe mis à jour. Utilisez-le lors de votre prochaine connexion.' };
   }
-
-  /**
-   * En développement uniquement : réinitialise le mot de passe d'un utilisateur par email.
-   * Permet de débloquer la connexion si le hash en base est corrompu ou inconnu.
-   */
-  async devResetPassword(email: string, newPassword: string): Promise<{ ok: boolean; message: string }> {
-    const devHelpersEnabled = this.configService.get('ENABLE_DEV_AUTH_HELPERS') === 'true';
-    if (process.env.NODE_ENV === 'production' || !devHelpersEnabled) {
-      throw new BadRequestException('Non disponible en production');
-    }
-    const normalizedEmail = email.trim().toLowerCase();
-    const user = await this.userRepository.findOne({ where: { email: normalizedEmail } });
-    if (!user) {
-      return { ok: false, message: 'Aucun compte avec cet email' };
-    }
-    const rawPassword = newPassword.trim();
-    if (rawPassword.length < 6) {
-      return { ok: false, message: 'Le mot de passe doit faire au moins 6 caractères' };
-    }
-    user.passwordHash = await bcrypt.hash(rawPassword, 10);
-    await this.userRepository.save(user);
-    this.logger.log(`Dev: mot de passe réinitialisé pour ${normalizedEmail}`);
-    return { ok: true, message: `Mot de passe mis à jour pour ${normalizedEmail}. Vous pouvez vous connecter.` };
-  }
 }
